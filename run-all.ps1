@@ -18,6 +18,12 @@ $myScriptPath = Join-Path $here "my-script.txt"
 $combineJs    = Join-Path $here "scripts\combine-email-report.js"
 $cleanupJs    = Join-Path $here "scripts\cleanup-temp.js"
 
+# Default exit codes (avoid $null / undefined variables)
+$code1 = 0
+$code2 = 0
+$code3 = 0
+$code4 = 0
+
 # Checks
 if (-not (Test-Path $myScriptPath)) { Write-Host "[ERR ] my-script.txt not found: $myScriptPath" -ForegroundColor Red; exit 1 }
 # if (-not (Test-Path $ssciPath))     { Write-Host "[ERR ] ssci.txt not found: $ssciPath" -ForegroundColor Red; exit 1 }
@@ -31,6 +37,7 @@ function Run-TxtAsChildPs {
     [Parameter(Mandatory=$true)][string]$TxtPath,
     [string]$WorkingDir = $(Split-Path -Parent $TxtPath)
   )
+
   if (-not (Test-Path -LiteralPath $TxtPath)) { throw "Script not found: $TxtPath" }
 
   # Materialize a temp .ps1 to avoid Invoke-Expression quirks
@@ -49,11 +56,14 @@ function Run-TxtAsChildPs {
   Write-Host "[INFO] Running child PowerShell: $TxtPath" -ForegroundColor Cyan
   Push-Location $WorkingDir
   try {
-    # Run as a child PowerShell so scope/variables don't collide
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $tempPs1
+    # IMPORTANT:
+    # Pipe ALL child output to Out-Host so it prints to console,
+    # but does NOT become the function return value (prevents Object[] capture).
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $tempPs1 2>&1 | Out-Host
+
     $code = $LASTEXITCODE
     if ($code -eq $null) { $code = 0 }
-    return $code
+    return [int]$code
   }
   finally {
     Pop-Location
@@ -99,16 +109,22 @@ try {
   Write-Host "[INFO] Cleaning Temp: $cleanupJs" -ForegroundColor Cyan
   & node $cleanupJs
   $code4 = $LASTEXITCODE
-  $cleanupDone = $true   # <-- marks that cleanup step happened (even if it failed)
+  $cleanupDone = $true   # marks cleanup step happened (even if it failed)
+
   if ($code4 -ne 0) {
     Write-Host "[WARN] cleanup-temp.js exit code: $code4" -ForegroundColor Yellow
   } else {
     Write-Host "[INFO] cleanup-temp.js OK" -ForegroundColor Green
   }
 
-  # Final exit code
+  # Final exit code (max of the step exit codes)
   $final = 0
-  foreach ($c in @($code1,$code2,$code3,$code4)) { if ($c -gt $final) { $final = $c } }
+  foreach ($c in @($code1,$code2,$code3,$code4)) {
+    $ci = 0
+    if ($c -ne $null) { $ci = [int]$c }
+    if ($ci -gt $final) { $final = $ci }
+  }
+
   if ($final -eq 0) {
     Write-Host "[INFO] All done." -ForegroundColor Green
   } else {
