@@ -17,6 +17,8 @@ concurrency:
 jobs:
   run-and-build-site:
     runs-on: windows-latest
+    env:
+      PROJECT_ROOT: ${{ github.workspace }}
 
     steps:
       - name: Checkout
@@ -31,32 +33,58 @@ jobs:
         shell: pwsh
         run: |
           npm i -g newman newman-reporter-htmlextra
+          node -v
           newman -v
 
-      - name: Run runner
+      - name: Run runner (PowerShell)
         shell: pwsh
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\run-all.ps1"
 
-      - name: Prepare GitHub Pages site (index.html = latest report)
+      # ✅ Publish ONLY the final combined report as index.html
+      - name: Prepare GitHub Pages site (ONLY final combined report)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          $latest = Get-ChildItem -Path ".\EmailReports" -Recurse -Filter *.html |
+          # Find newest combined report produced by combine-email-report.js
+          $latest = Get-ChildItem -Path ".\EmailReports" -Recurse -Filter "Digital Api Automation Report.html" |
                     Sort-Object LastWriteTime -Descending |
                     Select-Object -First 1
 
-          if (-not $latest) { throw "No HTML report found under EmailReports." }
+          if (-not $latest) {
+            Write-Host "EmailReports content:"
+            if (Test-Path ".\EmailReports") {
+              Get-ChildItem ".\EmailReports" -Recurse | Select-Object FullName
+            } else {
+              Write-Host "EmailReports folder not found."
+            }
+            throw "Final combined report not found: Digital Api Automation Report.html"
+          }
 
           New-Item -ItemType Directory -Force -Path ".\site" | Out-Null
-          Copy-Item -Path ($latest.Directory.FullName + "\*") -Destination ".\site" -Recurse -Force
           Copy-Item -Path $latest.FullName -Destination ".\site\index.html" -Force
+
+          "Published index.html from: $($latest.FullName)" | Out-File ".\site\_meta.txt" -Encoding utf8
+          Write-Host "Published index.html from: $($latest.FullName)"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
+
+      # Optional: still keep full outputs as downloadable artifact (zip)
+      - name: Upload full reports artifact (optional)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: api-automation-reports
+          path: |
+            EmailReports
+            Reports
+            EY.COM\**\Reports
+            run_timing_*.txt
+          if-no-files-found: warn
 
   deploy:
     needs: run-and-build-site
@@ -66,8 +94,10 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
 
     steps:
-      - name: Configure Pages
+      - name: Configure Pages (auto-enable if needed)
         uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - name: Deploy to GitHub Pages
         id: deploy
