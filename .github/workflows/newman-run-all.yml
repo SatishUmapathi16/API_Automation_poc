@@ -17,8 +17,6 @@ concurrency:
 jobs:
   run-and-build-site:
     runs-on: windows-latest
-    env:
-      PROJECT_ROOT: ${{ github.workspace }}
 
     steps:
       - name: Checkout
@@ -33,7 +31,6 @@ jobs:
         shell: pwsh
         run: |
           npm i -g newman newman-reporter-htmlextra
-          node -v
           newman -v
 
       - name: Run runner
@@ -46,7 +43,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          # Find newest HTML under EmailReports (your consolidated report)
           $latest = Get-ChildItem -Path ".\EmailReports" -Recurse -Filter *.html |
                     Sort-Object LastWriteTime -Descending |
                     Select-Object -First 1
@@ -54,14 +50,8 @@ jobs:
           if (-not $latest) { throw "No HTML report found under EmailReports." }
 
           New-Item -ItemType Directory -Force -Path ".\site" | Out-Null
-
-          # Copy everything from the report folder (safe if report uses assets)
           Copy-Item -Path ($latest.Directory.FullName + "\*") -Destination ".\site" -Recurse -Force
-
-          # Stable entry point
           Copy-Item -Path $latest.FullName -Destination ".\site\index.html" -Force
-
-          "Published: $($latest.FullName)" | Out-File ".\site\_meta.txt" -Encoding utf8
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -76,6 +66,9 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
 
     steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
       - name: Deploy to GitHub Pages
         id: deploy
         uses: actions/deploy-pages@v4
