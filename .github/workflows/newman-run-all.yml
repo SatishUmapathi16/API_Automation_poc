@@ -1,0 +1,50 @@
+name: Run Newman API Suites (AccelQ)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+  pull_request:
+
+jobs:
+  run-newman:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: AccelQ
+
+    env:
+      PROJECT_ROOT: ${{ github.workspace }}\AccelQ
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Newman
+        run: npm i -g newman
+
+      - name: Show versions
+        run: |
+          node -v
+          newman -v
+
+      - name: Run AccelQ runner
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\run-all.ps1
+
+      - name: Upload reports (HTML + logs)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: accelq-reports
+          path: |
+            AccelQ\EmailReports
+            AccelQ\Reports
+            AccelQ\EY.COM\**\Reports
+            AccelQ\run_timing_{0}.txt

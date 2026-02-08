@@ -1,0 +1,24 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20260128142324
+Username: INCOFORGETECH\Satish.Umapathi
+RunAs User: INCOFORGETECH\Satish.Umapathi
+Configuration Name: 
+Machine: LP-UAE-24137111 (Microsoft Windows NT 10.0.26200.0)
+Host Application: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\SATISH~1.UMA\AppData\Local\Temp\nm-run\my-script_cf1de6fd02f24ca8945466beeafa1d92.ps1
+Process ID: 33432
+PSVersion: 5.1.26100.7462
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.7462
+BuildVersion: 10.0.26100.7462
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcript started, output file is C:\Users\Satish.Umapathi\Documents\AccelQ\Reports\2026-01-28\newman_Flight_Number_Search_20260128_142324.log
+
+**********************
+Windows PowerShell transcript end
+End time: 20260128142343
+**********************

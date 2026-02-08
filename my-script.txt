@@ -1,0 +1,218 @@
+# =========================================
+# Newman Multi-Suite Runner (sequential)
+# - Per-suite JSON + HTML only (NO email combine, NO cleanup)
+# - Real-time console output (no Tee-Object buffering)
+# - Logs under: .\Reports\<YYYY-MM-DD>\
+# - Suite reports under: .\<Suite>\Reports\<YYYY-MM-DD>\
+# =========================================
+
+$ErrorActionPreference = "Stop"
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+
+# ---------- PATHS ----------
+$root = (Get-Location).Path
+$suiteScript = Join-Path $root "scripts\make-suite-report.js"
+
+# Root-level logs (only .log files live here)
+$rootLogs = Join-Path $root "Reports"
+if (-not (Test-Path $rootLogs)) {
+  New-Item -ItemType Directory -Force -Path $rootLogs | Out-Null
+}
+
+function Info($m){ Write-Host "[INFO] $m" -ForegroundColor Cyan }
+function Warn($m){ Write-Host "[WARN] $m" -ForegroundColor Yellow }
+function Err ($m){ Write-Host "[ERR ] $m" -ForegroundColor Red }
+
+if (-not (Get-Command node   -ErrorAction SilentlyContinue)) { Err "Node.js not found"; throw "Install Node.js" }
+if (-not (Get-Command newman -ErrorAction SilentlyContinue)) { Err "newman not found"; throw "Install with: npm i -g newman" }
+if (-not (Test-Path $suiteScript)) { Err "Missing: $suiteScript"; throw "Suite builder JS not found" }
+
+Info ("Node version: "   + (& node -v))
+Info ("Newman version: " + (& newman -v))
+
+# ---------- SUITES (relative to $root) ----------
+$jobs = @(
+  @{ Path=".\EY.COM\Flight_Number_Search";
+     Collection="Flight_Number_Search.postman_collection.json";
+     Env="Flight_Number_Search.postman_environment.json";
+     Csv="Flight_Number_Search.csv";
+     Title="Digital Test Env - Flight Number Search" }	 
+)
+
+# ---------- HELPERS ----------
+function Normalize([string]$s){
+  if (-not $s) { return "" }
+  return ($s -replace "[^A-Za-z0-9]", "").ToLower()
+}
+
+function Resolve-Artifact {
+  param([string]$dir,[string]$hint,[object]$patterns,[string]$label)
+
+  if ($hint) {
+    $hintPath = Join-Path $dir $hint
+    if (Test-Path $hintPath) {
+      $p = (Resolve-Path $hintPath).Path
+      Info "$label resolved (exact): $p"
+      return $p
+    }
+  }
+
+  $patList = @()
+  if ($patterns -is [string]) { $patList = @($patterns) } else { $patList = $patterns }
+
+  foreach ($pat in $patList) {
+    $cand = Get-ChildItem -Path $dir -File -Filter $pat -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending
+    if ($cand.Count -gt 0) {
+      if ($hint) {
+        $h = Normalize ([IO.Path]::GetFileNameWithoutExtension($hint))
+        foreach ($f in $cand) {
+          if ((Normalize ([IO.Path]::GetFileNameWithoutExtension($f.Name))) -eq $h) {
+            Info "$label resolved (matched): $($f.FullName)"
+            return $f.FullName
+          }
+        }
+      }
+      $pick = $cand[0].FullName
+      Warn "$label using newest match ($pat): $pick"
+      return $pick
+    }
+  }
+  throw "$label not found in $dir"
+}
+
+function Convert-ExcelToCsv {
+  param([string]$excel,[string]$csv)
+  Info "Converting Excel to CSV: $excel -> $csv"
+  $excelApp = New-Object -ComObject Excel.Application
+  $excelApp.Visible = $false
+  try {
+    $wb = $excelApp.Workbooks.Open($excel)
+    $wb.SaveAs((Resolve-Path $csv), 6)  # 6 = CSV
+    $wb.Close($false)
+  } finally {
+    $excelApp.Quit()
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excelApp) | Out-Null
+  }
+}
+
+function Resolve-Data {
+  param([string]$dir,[string]$hintCsv)
+  try {
+    return (Resolve-Artifact -dir $dir -hint $hintCsv -patterns "*.csv" -label "CSV")
+  } catch {}
+  $xls = Get-ChildItem -Path $dir -File -Include *.xlsx,*.xls -ErrorAction SilentlyContinue |
+         Sort-Object LastWriteTime -Descending
+  if ($xls.Count -gt 0) {
+    $x   = $xls[0]
+    $csv = Join-Path $dir (([IO.Path]::GetFileNameWithoutExtension($x.Name)) + ".csv")
+    Convert-ExcelToCsv -excel $x.FullName -csv $csv
+    return $csv
+  }
+  throw "CSV/Excel data not found in $dir"
+}
+
+function CleanBase([string]$collectionPath){
+  $b = [IO.Path]::GetFileNameWithoutExtension($collectionPath)
+  $b = $b -replace "(\.|_)postman_collection$", ""
+  $b = $b -replace "(\.|_)collection$", ""
+  $b = $b -replace "[\._-]{2,}", "_"
+  $b = $b.TrimEnd("_","-",".")
+  return $b
+}
+
+function ShowState($label,$path){
+  if (Test-Path $path) {
+    $fi = Get-Item $path
+    Info ("{0}: exists ({1} bytes) -> {2}" -f $label, $fi.Length, $fi.FullName)
+  } else {
+    Warn ("{0}: missing -> {1}" -f $label, $path)
+  }
+}
+
+# ---------- RUNNER ----------
+function Invoke-One {
+  param([hashtable]$j)
+
+  Push-Location $j.Path
+  try {
+    $cwd = (Get-Location).Path
+    Info ("Working dir: " + $cwd)
+
+    $collection = Resolve-Artifact -dir $cwd -hint $j.Collection -patterns "*.postman_collection.json" -label "Collection"
+    $env        = Resolve-Artifact -dir $cwd -hint $j.Env        -patterns @("*.postman_environment.json","*.postman_environment*") -label "Environment"
+    $dataCsv    = Resolve-Data     -dir $cwd -hintCsv $j.Csv
+
+    $start  = Get-Date
+    $stamp  = $start.ToString("yyyyMMdd_HHmmss")
+    $byDate = $start.ToString("yyyy-MM-dd")
+
+    $suiteReportsRoot = Join-Path $cwd "Reports"
+    $suiteOutDir      = Join-Path $suiteReportsRoot $byDate
+    New-Item -ItemType Directory -Force -Path $suiteOutDir | Out-Null
+
+    $rootDay = Join-Path $rootLogs $byDate
+    New-Item -ItemType Directory -Force -Path $rootDay | Out-Null
+
+    $base      = CleanBase $collection
+    $jsonSuite = Join-Path $suiteOutDir ("summary_{0}_{1}.json" -f $base, $stamp)
+    $htmlSuite = Join-Path $suiteOutDir ("{0}_{1}.html" -f $base, $stamp)
+    $logRoot   = Join-Path $rootDay     ("newman_{0}_{1}.log" -f $base, $stamp)
+
+    ShowState "PRE-JSON (suite)" $jsonSuite
+    ShowState "PRE-HTML (suite)" $htmlSuite
+
+    Info "Running Newman"
+    Info "  Collection : $collection"
+    Info "  Environment: $env"
+    Info "  Data (CSV) : $dataCsv"
+    Info "  Report base: $base"
+
+    # REALTIME CONSOLE + LOG (Transcript, no pipeline)
+    $nmArgs = @(
+      "run", $collection,
+      "-e", $env,
+      "--iteration-data", $dataCsv,
+      "--reporters", "cli,json",
+      "--reporter-json-export", $jsonSuite,
+      "--suppress-exit-code",
+      "--verbose"
+    )
+
+    Start-Transcript -Path $logRoot -Append
+    try {
+      & newman @nmArgs
+      $code = $LASTEXITCODE; if ($code -eq $null) { $code = 0 }
+    } finally {
+      Stop-Transcript | Out-Null
+    }
+
+    ShowState "POST-JSON (suite)" $jsonSuite
+    ShowState "LOG (root)" $logRoot
+
+    if (-not (Test-Path $jsonSuite)) { Err "JSON not created. See log: $logRoot"; throw "Newman did not produce JSON: $($j.Title)" }
+
+    Info "Building suite HTML with Node"
+    & node $suiteScript $jsonSuite $htmlSuite "$($j.Title)" 1000
+
+    ShowState "POST-HTML (suite)" $htmlSuite
+    if (-not (Test-Path $htmlSuite)) { Err "HTML not produced"; throw "HTML not produced: $htmlSuite" }
+
+    Write-Host ("DONE -> " + $htmlSuite) -ForegroundColor Green
+
+    # Keep root logs clean (no json/html in root logs)
+    Get-ChildItem -Path $rootDay -File -Include *.json,*.html -ErrorAction SilentlyContinue | ForEach-Object {
+      try { Remove-Item -Force $_.FullName } catch { Warn ("Could not remove stray file: " + $_.FullName) }
+    }
+  } catch {
+    Err $_.Exception.Message
+  } finally {
+    Pop-Location
+  }
+}
+
+# Run all suites (per-suite only; NO combine/cleanup here)
+$jobs | ForEach-Object { Invoke-One $_ }
+
+Info "Run complete (per-suite only)."
+exit 0
