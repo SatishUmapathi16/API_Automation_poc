@@ -1,15 +1,22 @@
-name: Run Newman Suites (API_Automation_poc)
+name: Run Tests + Publish HTML Report
 
 on:
   workflow_dispatch:
   push:
     branches: ["main"]
-  pull_request:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
 
 jobs:
-  run-newman:
+  run-and-build-site:
     runs-on: windows-latest
-
     env:
       PROJECT_ROOT: ${{ github.workspace }}
 
@@ -17,46 +24,58 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show repo layout (debug)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
-          Get-ChildItem $env:GITHUB_WORKSPACE | Format-Table -AutoSize
-
-          # Validate required files exist in repo root
-          foreach ($f in @("run-all.ps1","my-script.txt","scripts","EY.COM","Reports","EmailReports")) {
-            $p = Join-Path $env:GITHUB_WORKSPACE $f
-            if (-not (Test-Path $p)) { throw "Missing required path: $p" }
-          }
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Install Newman + reporters
+      - name: Install Newman + HTML reporter
         shell: pwsh
         run: |
           npm i -g newman newman-reporter-htmlextra
           node -v
           newman -v
-          where.exe newman
 
-      - name: Run AccelQ runner (PowerShell)
+      - name: Run runner
         shell: pwsh
-        working-directory: ${{ github.workspace }}
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\run-all.ps1"
 
-      - name: Upload reports artifact
-        uses: actions/upload-artifact@v4
-        if: always()
+      - name: Prepare GitHub Pages site (index.html = latest report)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # Find newest HTML under EmailReports (your consolidated report)
+          $latest = Get-ChildItem -Path ".\EmailReports" -Recurse -Filter *.html |
+                    Sort-Object LastWriteTime -Descending |
+                    Select-Object -First 1
+
+          if (-not $latest) { throw "No HTML report found under EmailReports." }
+
+          New-Item -ItemType Directory -Force -Path ".\site" | Out-Null
+
+          # Copy everything from the report folder (safe if report uses assets)
+          Copy-Item -Path ($latest.Directory.FullName + "\*") -Destination ".\site" -Recurse -Force
+
+          # Stable entry point
+          Copy-Item -Path $latest.FullName -Destination ".\site\index.html" -Force
+
+          "Published: $($latest.FullName)" | Out-File ".\site\_meta.txt" -Encoding utf8
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: api-automation-reports
-          path: |
-            EmailReports
-            Reports
-            EY.COM\**\Reports
-            run_timing_*.txt
-          if-no-files-found: warn
+          path: site
+
+  deploy:
+    needs: run-and-build-site
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
