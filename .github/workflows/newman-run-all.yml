@@ -1,50 +1,87 @@
-name: Run Newman API Suites (AccelQ)
+name: Run AccelQ Newman Suites
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
 
 jobs:
-  run-newman:
+  run-accelq:
     runs-on: windows-latest
-
-    defaults:
-      run:
-        shell: pwsh
-        working-directory: AccelQ
-
-    env:
-      PROJECT_ROOT: ${{ github.workspace }}\AccelQ
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Detect whether your project is in AccelQ or AccelQ/AccelQ
+      - name: Resolve AccelQ project directory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $candidates = @(
+            Join-Path $env:GITHUB_WORKSPACE "AccelQ\AccelQ"
+            Join-Path $env:GITHUB_WORKSPACE "AccelQ"
+          )
+
+          $found = $null
+          foreach ($p in $candidates) {
+            if (Test-Path $p) { $found = $p; break }
+          }
+
+          if (-not $found) {
+            Write-Host "Repo root contents:"
+            Get-ChildItem $env:GITHUB_WORKSPACE | Format-Table -AutoSize
+            throw "Could not find AccelQ folder. Expected AccelQ or AccelQ\AccelQ."
+          }
+
+          Write-Host "Using PROJECT_DIR = $found"
+          "PROJECT_DIR=$found" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Verify required files exist
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "PROJECT_DIR=$env:PROJECT_DIR"
+          Get-ChildItem $env:PROJECT_DIR | Format-Table -AutoSize
+
+          $runner = Join-Path $env:PROJECT_DIR "run-all.ps1"
+          if (-not (Test-Path $runner)) {
+            throw "run-all.ps1 not found at $runner"
+          }
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Install Newman
-        run: npm i -g newman
-
-      - name: Show versions
+      - name: Install Newman + HTML Reporter
+        shell: pwsh
         run: |
+          npm i -g newman newman-reporter-htmlextra
           node -v
           newman -v
+          where.exe newman
 
+      # Run your existing PowerShell runner
       - name: Run AccelQ runner
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\run-all.ps1
+        shell: pwsh
+        working-directory: ${{ env.PROJECT_DIR }}
+        env:
+          PROJECT_ROOT: ${{ env.PROJECT_DIR }}
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\run-all.ps1"
 
-      - name: Upload reports (HTML + logs)
+      # Upload reports + logs even if tests fail
+      - name: Upload Reports Artifact
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: accelq-reports
           path: |
-            AccelQ\EmailReports
-            AccelQ\Reports
-            AccelQ\EY.COM\**\Reports
-            AccelQ\run_timing_{0}.txt
+            ${{ env.PROJECT_DIR }}\EmailReports
+            ${{ env.PROJECT_DIR }}\Reports
+            ${{ env.PROJECT_DIR }}\EY.COM\**\Reports
+            ${{ env.PROJECT_DIR }}\run_timing_*.txt
+          if-no-files-found: warn
